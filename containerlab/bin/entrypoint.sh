@@ -4,7 +4,6 @@ set -euo pipefail
 HOSTNAME=$(hostname)
 CFG_DIR="/etc/nodes"
 CFG_FILE="${CFG_DIR}/${HOSTNAME}.cfg"
-ETH1_INTERFACE="eth1"
 
 echo "=== Node entrypoint: ${HOSTNAME} ==="
 
@@ -19,33 +18,56 @@ source "${CFG_FILE}"
 ip link set lo up
 echo "[OK] Loopback interface up"
 
-ip link set "${ETH1_INTERFACE}" up
-echo "[OK] ${ETH1_INTERFACE} interface up"
+if [[ "${ROLE}" == "router" ]]; then
+    ip link set eth1 up
+    ip link set eth2 up
 
-ip addr flush dev "${ETH1_INTERFACE}" 2>/dev/null || true
-ip addr add "${NODE_IP}/${NODE_PREFIX}" dev "${ETH1_INTERFACE}"
-echo "[OK] IPv4 configured: ${NODE_IP}/${NODE_PREFIX}"
+    # Flush only global addresses; keep IPv6 link-local addresses for NDP
+    ip -4 addr flush dev eth1 2>/dev/null || true
+    ip -4 addr flush dev eth2 2>/dev/null || true
+    ip -6 addr flush dev eth1 scope global 2>/dev/null || true
+    ip -6 addr flush dev eth2 scope global 2>/dev/null || true
 
-ip -6 addr add "${NODE_IP6}/${NODE_PREFIX6}" dev "${ETH1_INTERFACE}" nodad
-echo "[OK] IPv6 configured: ${NODE_IP6}/${NODE_PREFIX6}"
+    ip addr add "${NODE_IP}/${NODE_PREFIX}" dev eth1
+    ip addr add "${NODE_IP2}/${NODE_PREFIX2}" dev eth2
+
+    ip -6 addr add "${NODE_IP6}/${NODE_PREFIX6}" dev eth1 nodad
+    ip -6 addr add "${NODE_IP6_2}/${NODE_PREFIX6_2}" dev eth2 nodad
+
+    ip -6 route replace fc00:1::/64 dev eth1
+    ip -6 route replace fc00:2::/64 dev eth2
+
+    sysctl -w net.ipv4.ip_forward=1
+    sysctl -w net.ipv6.conf.all.forwarding=1
+    sysctl -w net.ipv6.conf.eth1.forwarding=1
+    sysctl -w net.ipv6.conf.eth2.forwarding=1
+
+    echo "[OK] Router configured"
+
+else
+    ip link set eth1 up
+
+    # Flush only global addresses; keep IPv6 link-local addresses for NDP
+    ip -4 addr flush dev eth1 2>/dev/null || true
+    ip -6 addr flush dev eth1 scope global 2>/dev/null || true
+
+    ip addr add "${NODE_IP}/${NODE_PREFIX}" dev eth1
+    ip -6 addr add "${NODE_IP6}/${NODE_PREFIX6}" dev eth1 nodad
+
+    ip route replace default via "${GW_IP}" dev eth1
+    ip -6 route replace default via "${GW_IP6}" dev eth1
+
+    echo "[OK] Host configured"
+fi
 
 echo ""
 echo "[INFO] Network configuration:"
 ip addr show
 echo ""
 
-if ping -c 2 -W 2 "${PEER_IP}" >/dev/null 2>&1; then
-    echo "[OK] Peer IPv4 (${PEER_IP}) reachable"
-else
-    echo "[WARN] Peer IPv4 (${PEER_IP}) not reachable"
-fi
-
-if ping -6 -c 2 -W 2 "${PEER_IP6}" >/dev/null 2>&1; then
-    echo "[OK] Peer IPv6 (${PEER_IP6}) reachable"
-else
-    echo "[WARN] Peer IPv6 (${PEER_IP6}) not reachable"
-fi
+echo "[INFO] Routes:"
+ip route show
+ip -6 route show
+echo ""
 
 echo "[INFO] Node ${HOSTNAME} ready"
-
-echo "[DEBUG] Ciao! Sono il entry point :))"
